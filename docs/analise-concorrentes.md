@@ -72,14 +72,82 @@ o site Tabela FIPE Brasil" e IPVA "coletado do site IPVA" (SEFAZ/DETRAN). Na pr�
 **dados cadastrais básicos** (marca/modelo/cor/município/chassi parcial) que vários fornecedores de
 "placa básica" vendem por centavos, guardada em cache no servidor e cruzada com a FIPE pública.
 
-### 1.3 Resumo dos dois modelos
-| | verificaplaca | keplaca |
+### 1.3 olhonocarro.com.br: líder de mercado, ecossistema **Gringo** + infraestrutura **CheckTudo**
+
+Análise feita com o REA (`analyze_web_bundle` via CDP: 23 scripts, 20 parseados, Next.js com alta
+confiança), mais a captura de rede de todas as origens e a leitura dos 39 scripts de produção (~4 MB).
+
+**Stack**
+- Front em **Next.js** (páginas estáticas com `_next/data/<buildId>/*.json`) com Redux, Radix e Tailwind,
+  hospedado/servido na Vercel. Sentry e Dynatrace para monitoramento.
+- APIs próprias em subdomínios:
+  | Host | Papel (pelo código) |
+  |---|---|
+  | `onc-uluru-api.olhonocarro.com.br` | API principal: `/api/query/pre`, `/api/query/v2/...`, `/api/query/{id}/progress/sse` (progresso em tempo real por SSE), carrinho (`/api/user-cart/*`, `/api/anon-cart/`), cupons, usuário/LGPD (`/api/user/consent`, `/data/download`, `/set-to-deletion`), parceiros/afiliados (`/api/partner/incomings`), opinião do dono, test-drive |
+  | `xbub67gq59.execute-api.sa-east-1.amazonaws.com/prod` | API de pagamento (AWS API Gateway em São Paulo, headers `X-Paym-Origin`/`X-Payme...`) |
+  | `onc-highway.olhonocarro.com.br/api/event` + `gateway.olhonocarro.com.br/spec/1.0` | Pipeline próprio de eventos/analytics |
+  | **`checktudo-hexagon.olhonocarro.com.br`** | CDN das fotos de anúncios no relatório (bloco `partnerInfo`) |
+  | `hexagon-localizador-agregados.olhonocarro.com.br` | Fotos do "localizador de números" (chassi/motor gravados nas peças) |
+  | `olhonocarro.usezapay.com.br` | **Zapay**: consulta grátis de débitos e emissão do CRLV digital, com pagamento de IPVA/multas |
+  | `blog.olhonocarro.com.br` | WordPress headless via GraphQL (`GetPost`, `GetRecentPostsByCategory`...) |
+- Outros: GrowthBook (feature flags/A-B, com flag `payment-v2`), Braze e Novu (CRM/notificações),
+  Adjust (atribuição de app), FingerprintJS (`openfpcdn.io`, anti-fraude no fluxo de consulta),
+  Hotjar, Clarity, GetSiteControl, selo do Reclame Aqui.
+- Design system e ícones vêm do **Gringo** (`gringo-icon/*.svg`, classes `gng-*`, `GRINGO_KIND_MAP` para
+  débitos, link "COTAR SEGURO" para `gringo.go.link`). O Olho no Carro roda dentro do ecossistema
+  do app Gringo (super-app do motorista).
+
+**Fluxo de consulta (pelo código)**
+1. `POST /api/query/pre {plate | chassis}` devolve `plate, chassis, brand, model, brandImageUrl`
+   ("confirmar dados do veículo", grátis).
+2. Carrinho e cupom, depois pagamento na API AWS (`/pagamento`, `/checkout`). O cliente pode comprar
+   pacotes de créditos (`/api/product/credit-packs`).
+3. A consulta é processada de forma **assíncrona**: `/perfil/consulta/{id}/processando` acompanha o
+   progresso por **SSE**, porque cada bloco vem de um fornecedor diferente e chega em tempos diferentes.
+   Há `reprocess` (v2/v3) para os blocos que falharem.
+
+**Produtos e preços** (`consultas-e-pacotes.json`, em centavos)
+| code | Produto | Preço |
 |---|---|---|
-| Receita | Venda de relatório (R$ 12,90 a 64,90) com upsell | Anúncios (AdSense) |
-| Dado grátis | Básico com teaser, protegido por Turnstile | Básico + FIPE + IPVA, aberto |
-| Fornecedor | Assertiva e CheckTudo (relatório) | Base cadastral básica + FIPE pública |
-| Stack | React SPA + Supabase Edge Functions + Pagar.me | PHP server-side, uma página por placa |
-| Aquisição | Google Ads, Meta Ads (CAPI) | SEO orgânico |
+| 100 | Veículo Completo (mais de 25 informações) | R$ 64,90 |
+| 30 | Veículo Essencial | R$ 45,90 |
+| 18 | Leilão + Dados do Veículo | R$ 34,90 |
+| — | Gravame | R$ 14,90 |
+| 98 | Dados Cadastrais do Veículo | R$ 13,90 |
+| crlv-digital | Débitos + CRLV digital (via Zapay) | grátis |
+
+**Blocos do relatório** (estrutura real do relatório de exemplo em `index.json`, campo `queryData`):
+`dadosPrincipais` (placa, renavam, chassi, motor...), `dadosCadastrais` (nacional + estadual, chassi
+remarcado), `restrictions` (nacional/estadual), `renajudDetails`, `gravame`, `debtsAndFines`,
+`theftHistory`, `sinistro`, `auctionHistory` + `auctionScore` (desvalorização %), `refusalInTrade`
+(risco de comercialização), `insuranceAcceptance`, `recall`, `historicoProprietarios` (nº de donos, UFs),
+`historicoKm`, `historicoDeManutencao`, `historicoFipe`, `custoMedio`, `fichaTecnica`, `partesPrincipais`,
+`localizadorDeAgregado`, `partnerInfo` (fotos e preço de anúncios antigos), `cotacaoSeguro`,
+`modelFailures`/`vehicleFailures`, `ownerReview`, `faturamento` (tipo de documento faturado).
+
+**Fontes dos dados (o que o próprio site declara, mais as evidências)**
+- Dados cadastrais nacionais: "registradas na **Senatran**" (base nacional/BIN).
+- Sinistro: "bancos de dados que armazenam registros das **seguradoras**".
+- Fotos e preço de anúncio: "**sites de venda parceiros**", servidos pelo host `checktudo-hexagon`, o
+  que indica que o motor de dados/agregação é a **CheckTudo** (o mesmo bureau que o verificaplaca revende).
+- Débitos e multas: **Zapay**, com mapeamento para IPVA, licenciamento, dívida ativa e `MULTA_RENAINF`.
+- Preço: FIPE (com histórico) e referências MOLICAR no texto de seguro.
+- Opinião do dono e blog: conteúdo próprio, o que dá SEO e diferencial.
+
+### 1.4 Resumo dos três modelos
+| | verificaplaca | keplaca | olhonocarro |
+|---|---|---|---|
+| Receita | Venda de relatório (R$ 12,90 a 64,90) com upsell | Anúncios (AdSense) | Relatório (R$ 13,90 a 64,90), créditos, afiliados, comissão da Zapay e cotação de seguro (Gringo) |
+| Dado grátis | Básico com teaser, protegido por Turnstile | Básico + FIPE + IPVA, aberto | Marca/modelo + débitos/CRLV grátis (Zapay) |
+| Fornecedor | Assertiva e CheckTudo (relatório) | Base cadastral básica + FIPE pública | Infra CheckTudo + Senatran + seguradoras + Zapay |
+| Stack | React SPA + Supabase Edge Functions + Pagar.me | PHP server-side, uma página por placa | Next.js/Vercel + APIs próprias + AWS + SSE |
+| Aquisição | Google Ads, Meta Ads (CAPI) | SEO orgânico | SEO (blog, catálogo, opinião do dono), app, CRM (Braze) |
+
+**Lições do olhonocarro para o nosso projeto:**
+- Processamento assíncrono por blocos com SSE: o relatório aparece aos poucos e o reprocessamento é por bloco.
+- Isca grátis que **gera receita**: débitos e CRLV via parceiro de pagamento (modelo Zapay), em vez de só custo.
+- Conteúdo próprio (opinião do dono, catálogo, falhas comuns do modelo) é diferencial que o bureau não vende.
+- Página de LGPD completa: consentimento, download de dados e exclusão de conta.
 
 ## 2. De onde os dados vêm de verdade
 
