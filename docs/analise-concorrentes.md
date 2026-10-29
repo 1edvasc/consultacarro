@@ -1,30 +1,85 @@
 # Análise: sites de consulta de placa (verificaplaca.com.br, keplaca.com)
 
-> **Limitação desta análise:** a rede da sessão de pesquisa bloqueou o acesso direto a
-> `verificaplaca.com.br` e `www.keplaca.com`. Não foi possível inspecionar o HTML, as
-> requisições de rede (XHR/fetch) nem os scripts desses sites. O conteúdo abaixo junta
-> o que foi **confirmado** em fontes públicas com o **padrão de mercado** dos sites desse tipo.
-> As partes inferidas estão marcadas. Para confirmar qual fornecedor cada site usa, veja a seção 5.
+> **Atualização (análise direta):** os dois sites foram abertos com um navegador real (Playwright),
+> com as chamadas de rede registradas e o JavaScript de produção inspecionado. As conclusões
+> abaixo vêm do código que os próprios sites entregam ao navegador.
 
-## 1. O que se sabe dos dois sites
+## 1. O que foi descoberto
 
-| Site | O que foi confirmado |
-|---|---|
-| verificaplaca.com.br | Domínio novo (cerca de 7 meses segundo o siteconfiavel.com.br), registrado em nome de **SIER SOLUCOES TECNOLOGICAS**, sem histórico no Reclame Aqui. |
-| keplaca.com | Nenhum dado institucional confirmado. Aparece em artigos de "consulta de placa grátis". |
+### 1.1 verificaplaca.com.br: relatório pago, dados da **Assertiva** e da **CheckTudo**
 
-**Modelo de negócio típico (inferido, é o padrão do setor):**
-1. **Isca grátis:** a pessoa digita a placa e recebe marca, modelo, ano, cor, cidade/UF e às vezes o valor FIPE.
-   Esse dado custa centavos ao site.
-2. **Paywall:** um "relatório completo" com débitos, multas, restrições, roubo/furto, leilão, sinistro,
-   gravame e recall, por algo entre R$ 5 e R$ 50 (ex.: ePlaca cobra R$ 4,99 pelo relatório base).
-   O site paga ao fornecedor B2B por consulta e fica com a diferença.
-3. **Pagamento** por Pix ou cartão via gateway (Mercado Pago, Pagar.me, Asaas, Stripe etc.), relatório
-   na tela e/ou em PDF por e-mail.
-4. **Aquisição:** SEO com páginas do tipo "consulta placa grátis", "tabela FIPE pela placa" e Google Ads.
+**Stack**
+- SPA em React + Vite + Tailwind + Radix/shadcn, servida atrás do Cloudflare.
+- Backend em **Supabase**, com domínio próprio `api.verificaplaca.com.br/functions/v1/*` (Edge Functions).
+  Tabelas visíveis no bundle: `consultas_placa`, `checkouts`, `checkout_agregados`, `upsell_settings`, `recovery_settings`.
+- Anti-robô com **Cloudflare Turnstile** (sitekey `0x4AAAAAAB4SkkzucSgwmus0`): sem token, o botão
+  "CONSULTAR PLACA" não é liberado.
+- Pagamento pelo **Pagar.me**, em Pix (QR code) e cartão. O checkout pede nome, e-mail, CPF e telefone.
+- Rastreamento: GTM, Google Ads, GA4 com tag first-party (`/sxim/...`), Meta Pixel com CAPI e Cloudflare Insights.
+- **O mesmo código atende `automovelonline.com.br`** (canonical encontrado no bundle). É o mesmo
+  operador, ou uma solução white-label, rodando mais de uma marca.
 
-Ou seja: **esses sites quase nunca têm acesso próprio às bases oficiais**. Eles revendem APIs de
-agregadores.
+**Fluxo**
+1. A placa vai para `POST functions/v1/consultar-placa-free` com `{placa, user_agent, turnstileToken}`.
+   A resposta traz dados básicos do veículo (`placa_modelo_novo`, `placa_modelo_antigo`, `ano_modelo`, ...).
+2. Uma tela "parcial" mostra parte dos dados e oferece os planos. O flag remoto `get-flow-config-public`
+   (`skip_parcial_enabled`) faz teste A/B pulando essa tela.
+3. `criar-checkout-pagarme` recebe `{placa, plano, consulta_id, customer:{name,email,document,phones}}`
+   e devolve o QR do Pix.
+4. Depois do pagamento vêm o upsell de adicionais (`criar-checkout-addon`, `get-checkout-addons`) e
+   a recuperação de carrinho por e-mail (`recovery`, `unsubscribe`).
+
+**Planos encontrados no código (R$)**
+| id | Nome | Preço |
+|---|---|---|
+| `bin_estadual` | Débitos e Multas Estaduais (Renajud, débitos, movimentação) | 12,90 |
+| `bin_estadual_owner` | "Quem é o Dono" | 12,90 |
+| `gravame` | Gravame (financiamento) | 13,90 |
+| `indicio_sinistro` | Indício de Sinistro | 14,90 |
+| `leilao` | Leilão Completo (histórico, score de aceitação/vistoria, FIPE) | 34,90 |
+| pacote `bin_estadual+bin_estadual_owner+bin_federal+renavam+gravame+indicio_sinistro` | Pacote Completo | 39,90 |
+| pacote anterior `+leilao` | Pacote Completo + Leilão | 64,90 |
+| outros | 9,90 / 15,90 (variações e adicionais) | |
+
+Os ids dos planos (`bin_estadual`, `bin_federal`, `gravame`, `indicio_sinistro`, `leilao`) são
+**exatamente os nomes dos produtos da API de Veículos da Assertiva**.
+
+**Fornecedores de dados (prova direta):** o painel administrativo, que vem incluído no bundle público,
+tem um gráfico de custo e margem por fornecedor com os campos `chamadas_assertiva`, `chamadas_checktudo`,
+`custo_assertiva_brl`, `custo_checktudo_brl` e `custo_outro_brl`. Há também o texto: *"bureau: Fornecedor
+de dados por trás do relatório (Assertiva ou CheckTudo). Vem do `bureau` gravado no checkout."*
+Ou seja, cada relatório é comprado da **Assertiva** ou da **CheckTudo**, e o site mede a margem de cada venda.
+
+> Observação: embutir o painel administrativo no bundle público expõe métricas internas a qualquer visitante.
+> No nosso projeto, o admin deve ficar em um bundle ou rota separada, protegida no servidor.
+
+### 1.2 keplaca.com: grátis, ganha dinheiro com **AdSense**
+
+**Stack**
+- Site PHP renderizado no servidor (`/site/site/templates/keplaca/...`), atrás do Cloudflare.
+- Não há API no navegador: o formulário só redireciona para `GET /placa/ABC1234`, e a página já vem
+  pronta do servidor. É SEO programático, com uma URL por placa.
+- Receita: **Google AdSense** (`ca-pub-3144675853968749`) e Funding Choices (consentimento). Não há paywall.
+- O texto usa português de Portugal ("Indique a placa", "Aulas Condução"), sinal de um operador
+  português/europeu com uma rede de sites de SEO.
+
+**Dados mostrados (exemplo: ABC1234):** marca, modelo, importado, ano, cor, potência, combustível,
+chassi mascarado (`*****P246344`), UF, município, segmento, código e valor FIPE, IPVA, e a conversão
+para a placa Mercosul (calculada localmente: o 2º número vira letra, 2→C).
+
+**Fontes declaradas** (página `/informacao`): "sites do Detran, Renavam e outros", FIPE "em parceria com
+o site Tabela FIPE Brasil" e IPVA "coletado do site IPVA" (SEFAZ/DETRAN). Na prática é a mesma base de
+**dados cadastrais básicos** (marca/modelo/cor/município/chassi parcial) que vários fornecedores de
+"placa básica" vendem por centavos, guardada em cache no servidor e cruzada com a FIPE pública.
+
+### 1.3 Resumo dos dois modelos
+| | verificaplaca | keplaca |
+|---|---|---|
+| Receita | Venda de relatório (R$ 12,90 a 64,90) com upsell | Anúncios (AdSense) |
+| Dado grátis | Básico com teaser, protegido por Turnstile | Básico + FIPE + IPVA, aberto |
+| Fornecedor | Assertiva e CheckTudo (relatório) | Base cadastral básica + FIPE pública |
+| Stack | React SPA + Supabase Edge Functions + Pagar.me | PHP server-side, uma página por placa |
+| Aquisição | Google Ads, Meta Ads (CAPI) | SEO orgânico |
 
 ## 2. De onde os dados vêm de verdade
 
@@ -45,7 +100,8 @@ agregadores.
 | **ConsultarPlaca** (docs.consultarplaca.com.br) | FIPE por placa com histórico de 12 meses, leilão, sinistro, roubo/furto | não informado |
 | **FipeAPI** (fipeapi.com.br) | FIPE por placa, token após cadastro | não informado |
 | **Credify** | Cautelar completa: sinistro, roubo/furto, recall, gravame, leilão conjugado, indício de sinistro, FIPE, base nacional | sob contrato |
-| **Assertiva** | BIN estadual e federal, gravame, leilão, indício de sinistro | sob contrato |
+| **Assertiva** ✅ usado pelo verificaplaca | BIN estadual e federal, gravame, leilão, indício de sinistro | sob contrato |
+| **CheckTudo** ✅ usado pelo verificaplaca | Relatórios veiculares (leilão, sinistro, débitos, gravame) | sob contrato |
 | **AnyCar** | Pagamento por chamada, sem mínimo, mais de 40 tipos de consulta | por chamada |
 | **AvaliService, Motor Consulta, Brasil Dados** | Leilão em várias bases, consulta em lote, JSON | sob contrato |
 | **Infosimples** | Automatiza portais do SENATRAN/Serpro/DETRAN | Muitas consultas exigem credencial do **titular** (gov.br/certificado), então não servem para consultar placa de terceiros |
@@ -83,8 +139,8 @@ Recomendações para recriar melhor:
   que gera o selo "Cuidado" nos concorrentes.
 - Não se apresentar como órgão oficial nem usar marca do DETRAN/gov.br.
 
-## 5. Como confirmar o fornecedor de cada concorrente (próximo passo)
-Num navegador comum, com o DevTools aberto na aba **Network → Fetch/XHR**:
+## 5. Como foi feita a confirmação (reproduzível)
+Feito com Playwright nesta análise (seção 1). Para repetir manualmente, num navegador comum, com o DevTools aberto na aba **Network → Fetch/XHR**:
 1. Fazer uma consulta grátis e ver para qual endpoint vai a placa (às vezes um backend próprio,
    mas o JSON costuma ter campos com nomes típicos de um fornecedor).
 2. Ver o domínio do checkout para identificar o gateway de pagamento.
