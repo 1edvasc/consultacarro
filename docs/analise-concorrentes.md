@@ -72,6 +72,40 @@ o site Tabela FIPE Brasil" e IPVA "coletado do site IPVA" (SEFAZ/DETRAN). Na pr�
 **dados cadastrais básicos** (marca/modelo/cor/município/chassi parcial) que vários fornecedores de
 "placa básica" vendem por centavos, guardada em cache no servidor e cruzada com a FIPE pública.
 
+#### API do keplaca: o que dá e o que não dá para provar (REA, 31/10/2026)
+
+- Captura de rede da home + envio do formulário, analisada com o REA (`inspect_web_network_capture`
+  → visão `api-surface`, Evidence `ev_73034b6f…c7a635`): as únicas chamadas do navegador são
+  AdSense, Funding Choices, GA4 e o desafio do Cloudflare. **Nenhuma chamada de API de placa.**
+- O único JS próprio (`script-base.js`, 12 KB) analisado com `analyze_javascript_application`
+  (Evidence `ev_98da0ed5…757c71`): zero requisições (`fetch`/XHR/WebSocket). O formulário só faz
+  `window.location = '/placa/' + placa`.
+- Conclusão (observada): a consulta ao fornecedor acontece **no servidor PHP**. O nome do fornecedor
+  não aparece em nada que o site entrega, então **não é possível provar qual API o keplaca usa**.
+  O Cloudflare também bloqueia navegadores automatizados em `/placa/*` (HTTP 403).
+- Inferência: os campos exibidos (marca, modelo, ano, cor, combustível, potência, segmento,
+  chassi mascarado, município/UF, código e valor FIPE) batem com o que as APIs de "placa básica + FIPE"
+  devolvem. A opção pública e barata que entrega exatamente esse conjunto é a **API PLACAS**
+  (`apiplacas.com.br`, endpoint `wdapi2.com.br`, o domínio `wdapi2.com.br` redireciona para
+  `apiplacas.com.br`). Usamos essa no nosso site.
+
+**API PLACAS (apiplacas.com.br): pública, autoatendimento, pré-paga via Pix, sem mensalidade**
+(preços da home do site em 31/10/2026; a página `/valores` ficou atrás do desafio do Cloudflare)
+
+| Produto | Endpoint `https://wdapi2.com.br/v3` | Preço/consulta |
+|---|---|---|
+| Consulta veicular simples (marca, modelo, ano, cor, combustível, município) | `/basico/{placa}` | R$ 0,03 |
+| Consulta FIPE | `/fipe/{placa}` | R$ 0,05 |
+| Renavam | `/renavam/{placa}` | R$ 0,12 |
+| Chassi | `/chassi/{placa}` | R$ 0,12 |
+| Número do motor | `/motor/{placa}` | R$ 0,12 |
+| Completa (básico + motor + chassi + Renavam, uma cobrança) | `/completa/{placa}` | R$ 0,20 |
+| Com situação/restrições | (em preparação) | R$ 0,05 |
+
+Autenticação `Authorization: Bearer <token>`; erros em JSON com `codigo` (`placa_invalida`,
+`saldo_insuficiente` = HTTP 402, `placa_nao_encontrada` = 404); erros não são cobrados;
+`/saldo` e `/logs` são grátis. Há bônus por faixa de recarga.
+
 ### 1.3 olhonocarro.com.br: líder de mercado, ecossistema **Gringo** + infraestrutura **CheckTudo**
 
 Análise feita com o REA (`analyze_web_bundle` via CDP: 23 scripts, 20 parseados, Next.js com alta
@@ -217,6 +251,8 @@ Feito com Playwright nesta análise (seção 1). Para repetir manualmente, num n
 5. Ferramentas como BuiltWith/Wappalyzer para identificar o stack.
 
 ## Fontes
+- https://apiplacas.com.br/
+- https://apiplacas.com.br/documentacao
 - https://www.siteconfiavel.com.br/site/verificaplaca-com-br
 - https://serprocrm.custhelp.com/app/answers/detail/a_id/174/~/consulta-online-senatran
 - https://portalservicos.senatran.serpro.gov.br/
