@@ -27,3 +27,4 @@ API_PLACAS_TOKEN=seu_token SITE_URL=https://seu.dominio npm start
 - Atrás do Cloudflare/proxy, use `TRUST_PROXY=true` para o limite por IP usar o IP real.
 
 Análise dos concorrentes e da API: [docs/analise-concorrentes.md](docs/analise-concorrentes.md).
+Conta de lucro: [docs/viabilidade-financeira.md](docs/viabilidade-financeira.md) (`python3 scripts/viabilidade.py`).
